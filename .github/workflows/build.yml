@@ -1,0 +1,113 @@
+name: Build patched Talos
+on:
+  push:
+    branches: [main]
+    paths: ['versions.env', 'patches/**', 'scripts/**', '.github/workflows/build.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  packages: write
+concurrency:
+  group: talos-ceph-build
+  cancel-in-progress: false
+jobs:
+  kernel:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    outputs:
+      image: ${{ steps.build.outputs.image }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Free disposable runner disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Fetch exact upstream kernel build
+        run: |
+          source versions.env
+          git init work/pkgs
+          git -C work/pkgs remote add origin https://github.com/siderolabs/pkgs.git
+          git -C work/pkgs fetch --depth=1 origin "$PKGS_COMMIT"
+          git -C work/pkgs checkout --detach FETCH_HEAD
+          python3 scripts/prepare.py kernel work/pkgs
+      - name: Compile and publish signed kernel and modules
+        id: build
+        run: |
+          source versions.env
+          tag="${IMAGE_TAG}-${GITHUB_SHA::12}"
+          image="ghcr.io/${GITHUB_REPOSITORY}/kernel:${tag}"
+          make -C work/pkgs kernel PLATFORM=linux/amd64 PUSH=true \
+            REGISTRY_AND_USERNAME="ghcr.io/${GITHUB_REPOSITORY}" TAG="$tag" \
+            CI_ARGS="--metadata-file=$GITHUB_WORKSPACE/kernel-metadata.json" PROGRESS=plain
+          digest=$(jq -r '."containerimage.digest"' kernel-metadata.json)
+          test "$digest" != null
+          echo "image=${image}@${digest}" >> "$GITHUB_OUTPUT"
+          echo "Kernel: ${image}@${digest}" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: kernel-build-metadata
+          path: kernel-metadata.json
+  installer:
+    needs: kernel
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Free disposable runner disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Fetch exact Talos source and include i915
+        run: |
+          source versions.env
+          git init work/talos
+          git -C work/talos remote add origin https://github.com/siderolabs/talos.git
+          git -C work/talos fetch --depth=1 origin "$TALOS_COMMIT" "refs/tags/$TALOS_VERSION:refs/tags/$TALOS_VERSION"
+          git -C work/talos checkout --detach "$TALOS_COMMIT"
+          python3 scripts/prepare.py talos work/talos
+      - name: Build Talos imager with the custom kernel
+        env:
+          KERNEL_IMAGE: ${{ needs.kernel.outputs.image }}
+        run: |
+          source versions.env
+          tag="${IMAGE_TAG}-${GITHUB_SHA::12}"
+          make -C work/talos imager PLATFORM=linux/amd64 INSTALLER_ARCH=targetarch \
+            TAG="$TALOS_VERSION" IMAGE_TAG_OUT="$tag" PUSH=true \
+            REGISTRY_AND_USERNAME="ghcr.io/${GITHUB_REPOSITORY}" \
+            PKG_KERNEL="$KERNEL_IMAGE" PROGRESS=plain
+      - name: Assemble and publish installer
+        run: |
+          source versions.env
+          tag="${IMAGE_TAG}-${GITHUB_SHA::12}"
+          prefix="ghcr.io/${GITHUB_REPOSITORY}"
+          mkdir -p _out
+          docker run --rm --privileged -v "$PWD/_out:/out" \
+            "${prefix}/imager:${tag}" installer --arch amd64 \
+            --base-installer-image "ghcr.io/siderolabs/installer-base:${TALOS_VERSION}"
+          docker load -i _out/installer-amd64.tar
+          loaded=$(tar -xOf _out/installer-amd64.tar manifest.json | jq -er '.[0].RepoTags[0]')
+          docker tag "$loaded" "${prefix}/installer:${tag}"
+          docker push "${prefix}/installer:${tag}"
+          docker tag "$loaded" "${prefix}/installer:${IMAGE_TAG}"
+          docker push "${prefix}/installer:${IMAGE_TAG}"
+          docker inspect "${prefix}/installer:${tag}" > _out/installer-inspect.json
+          docker buildx imagetools inspect "${prefix}/installer:${tag}" | tee _out/installer-manifest.txt
+          echo "Installer: ${prefix}/installer:${tag}" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: installer-metadata
+          path: |
+            _out/installer-inspect.json
+            _out/installer-manifest.txt

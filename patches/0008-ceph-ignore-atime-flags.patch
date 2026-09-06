@@ -1,0 +1,70 @@
+From 6de2efa150b6b6756e0fcc09d2b744f443b8bcf2 Mon Sep 17 00:00:00 2001
+From: Benjamin Huth <benjamin@laminar.network>
+Date: Sun, 6 Sep 2026 05:33:30 -0700
+Subject: [PATCH] ceph: ignore atime flags when comparing superblocks
+
+ceph_set_super() unconditionally sets SB_NODIRATIME and SB_NOATIME
+because CephFS does not maintain atime. These flags are absent from
+fc->sb_flags: the VFS handles noatime and nodiratime as per-mount flags.
+However, ceph_compare_super() masks only SB_BORN before comparing the
+existing superblock's flags with those in the new mount request.
+
+As a result, otherwise identical mounts fail the flags comparison and
+allocate separate superblocks and clients instead of sharing them. This
+creates extra MDS sessions and prevents inode cache sharing, which is
+particularly noticeable with many Kubernetes pods mounting the same
+CephFS path.
+
+Mask SB_NODIRATIME and SB_NOATIME along with SB_BORN when comparing the
+superblock flags. Keep the atime flags set on the superblock so that
+atime updates remain disabled, and preserve the comparison of the other
+superblock flags.
+
+Fixes: f7a2d0688a3b ("ceph: disable updating the atime since cephfs won't maintain it")
+Closes: https://tracker.ceph.com/issues/78440
+Cc: stable@vger.kernel.org
+Assisted-by: LLM
+---
+This implements the second approach in my report. The report records
+reproduction on Ubuntu 24.04 / Linux 6.8 and testing of this comparison
+change. See the report for the original two-mount reproducer.
+
+Validation during preparation:
+- Built fs/ceph/ on arm64 with GCC 13.3, CONFIG_CEPH_FS=m,
+  CONFIG_CEPH_FS_POSIX_ACL=y and W=1: no warnings or errors.
+- Compiled the before/after flag predicates in a standalone harness:
+  all 256 identical flag combinations now match, while all 65,280
+  unequal pairs still reject sharing.
+- Patch applies cleanly to the recorded for-linus base and mainline
+  1fc5a74b108fc90951890ec513ac81869f5eaff1.
+- No fresh live-cluster mount test was run during this preparation.
+
+Integration note: ceph-client/testing contains b9d944f1c8c2 ("ceph: mark
+the superblock active after mounting"), which sets SB_ACTIVE but leaves
+ceph_compare_super() unchanged. If that change is applied, SB_ACTIVE
+will also need to be excluded from this comparison. This patch targets
+the atime regression in for-linus and existing released kernels.
+
+AI assistance: I identified the regression and proposed the mask change
+in the linked report. Codex helped check the source, format the patch,
+write its description and prepare validation and submission materials.
+
+ fs/ceph/super.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/fs/ceph/super.c b/fs/ceph/super.c
+index 72935f665f11..13a8f246f1a0 100644
+--- a/fs/ceph/super.c
++++ b/fs/ceph/super.c
+@@ -1265,7 +1265,8 @@ static int ceph_compare_super(struct super_block *sb, struct fs_context *fc)
+ 		doutc(cl, "fsid doesn't match\n");
+ 		return 0;
+ 	}
+-	if (fc->sb_flags != (sb->s_flags & ~SB_BORN)) {
++	if (fc->sb_flags != (sb->s_flags &
++			     ~(SB_BORN | SB_NODIRATIME | SB_NOATIME))) {
+ 		doutc(cl, "flags differ\n");
+ 		return 0;
+ 	}
+
+base-commit: dc173b37415e8f738fc4de477490056b479ddc9f
