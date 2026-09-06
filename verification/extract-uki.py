@@ -6,6 +6,7 @@ assert p[pe:pe+4]==b'PE\0\0'
 n=struct.unpack_from('<H',p,pe+6)[0]
 opt=struct.unpack_from('<H',p,pe+20)[0]
 start=pe+24+opt
+seen=set()
 for i in range(n):
  off=start+40*i
  name=p[off:off+8].rstrip(b'\0').decode()
@@ -13,6 +14,8 @@ for i in range(n):
  size,offset=struct.unpack_from('<II',p,off+16)
  size=min(size,virtual_size) if virtual_size else size
  assert offset+size <= len(p)
- if name in ('.linux','.initrd','.uname','.cmdline'):
+ if name in ('.linux','.initrd','.uname','.cmdline') and name not in seen:
+  seen.add(name)
   pathlib.Path('./'+name[1:]).write_bytes(p[offset:offset+size])
   print(name,size)
+assert {'.linux','.initrd','.cmdline'} <= seen

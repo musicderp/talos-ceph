@@ -2,6 +2,13 @@
 set -euo pipefail
 VERIFY_DIR=$(pwd)
 python3 ./extract-uki.py
+python3 - <<'PY'
+from pathlib import Path
+args=Path('cmdline').read_bytes().rstrip(b'\0').decode().split()
+assert 'module.sig_enforce=1' in args, 'Signature enforcement missing'
+assert not any(a.startswith('talos.experimental.wipe=') for a in args), 'Default boot profile would wipe disks'
+print('Default boot profile enforces module signatures and has no wipe argument')
+PY
 bash ./extract-ikconfig ./linux > ./kernel.config
 grep -Fx CONFIG_CEPH_FS=y ./kernel.config
 grep -Fx CONFIG_CEPH_LIB=y ./kernel.config
