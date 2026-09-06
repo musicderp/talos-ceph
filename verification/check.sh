@@ -19,7 +19,7 @@ cd "$VERIFY_DIR/initramfs"
 zstd -dc ../initrd | cpio -id --quiet
 unsquashfs -d "$VERIFY_DIR/rootfs" rootfs.sqsh >"$VERIFY_DIR/unsquashfs.log"
 cd "$VERIFY_DIR"
-release=6.18.38-talos-ceph1
+release=${KERNEL_RELEASE:?Set KERNEL_RELEASE from the build versions.env}
 test -d "rootfs/usr/lib/modules/$release"
 i915="rootfs/usr/lib/modules/$release/kernel/drivers/gpu/drm/i915/i915.ko"
 test -s "$i915"

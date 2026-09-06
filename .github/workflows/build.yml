@@ -2,7 +2,7 @@ name: Build patched Talos
 on:
   push:
     branches: [main]
-    paths: ['versions.env', 'patches/**', 'scripts/**', '.github/workflows/build.yml']
+    paths: ['versions.env', 'patches/**', 'scripts/prepare.py', 'scripts/ceph_patch.py', '.github/workflows/build.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -52,7 +52,9 @@ jobs:
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: kernel-build-metadata
-          path: kernel-metadata.json
+          path: |
+            kernel-metadata.json
+            work/pkgs/ceph-patch-status.txt
   installer:
     needs: kernel
     runs-on: ubuntu-24.04

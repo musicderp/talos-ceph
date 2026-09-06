@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Apply narrow, checked customizations to the pinned upstream sources."""
-import json
 from pathlib import Path
-import shutil
 import sys
 
+from ceph_patch import prepare as prepare_ceph
+
 root = Path(__file__).resolve().parents[1]
+versions = dict(line.split("=", 1) for line in (root / "versions.env").read_text().splitlines() if line and not line.startswith("#"))
 kind = sys.argv[1]
 source = Path(sys.argv[2])
 
@@ -19,8 +20,8 @@ if kind == "kernel":
     config = source / "kernel/build/config-amd64"
     for setting in ("CONFIG_CEPH_FS=y", "CONFIG_CEPH_LIB=y", "CONFIG_DRM_I915=m", "CONFIG_MODULE_SIG_ALL=y"):
         assert setting in config.read_text().splitlines(), setting
+    prepare_ceph(source, versions)
     replace_once(config, 'CONFIG_LOCALVERSION="-talos"', 'CONFIG_LOCALVERSION="-talos-ceph1"')
-    shutil.copy2(root / "patches/0008-ceph-ignore-atime-flags.patch", source / "kernel/build/patches")
 elif kind == "talos":
     modules = source / "hack/modules-amd64.txt"
     entries = set(modules.read_text().splitlines())

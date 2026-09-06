@@ -10,7 +10,7 @@ on:
         required: true
 permissions:
   contents: write
-  packages: read
+  packages: write
 jobs:
   verify:
     if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main')
@@ -47,20 +47,36 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends cpio squashfs-tools zstd kmod xz-utils bzip2 lz4
           cd verification
-          sudo bash check.sh | tee ../release/verification.txt
+          source /tmp/build-versions.env
+          sudo env KERNEL_RELEASE="$KERNEL_RELEASE" bash check.sh | tee ../release/verification.txt
           cp kernel.config ../release/kernel.config
+      - name: Promote verified current build to stable and latest
+        run: |
+          git fetch --depth=1 origin main
+          if git diff --quiet "$BUILD_SHA" origin/main -- versions.env patches scripts/prepare.py scripts/ceph_patch.py .github/workflows/build.yml; then
+            for alias in stable latest; do
+              docker tag "$INSTALLER_IMAGE" "ghcr.io/${GITHUB_REPOSITORY}/installer:$alias"
+              docker push "ghcr.io/${GITHUB_REPOSITORY}/installer:$alias"
+            done
+            echo 'Promoted verified installer to stable and latest.' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'Build inputs have advanced; preserved existing stable/latest aliases.' >> "$GITHUB_STEP_SUMMARY"
+          fi
       - name: Publish downloadable installer and verification report
         run: |
+          source /tmp/build-versions.env
           docker save "$INSTALLER_IMAGE" -o release/installer-amd64.tar
           (cd release && sha256sum installer-amd64.tar > SHA256SUMS)
           {
-            echo "Talos v1.13.6 with Linux 6.18.38-talos-ceph1."
+            echo "Talos ${TALOS_VERSION} with Linux ${KERNEL_RELEASE}."
             echo
             echo "CephFS and libceph are built in. The signed i915 module and firmware are included."
             echo "Installer contents passed the attached automated verification."
             echo
             echo "Deploy using the digest in installer-image.txt. Load the archive with docker load -i installer-amd64.tar."
             echo "The archive contains no cluster configuration or credentials."
+            echo
+            echo "Known limitation: duplicate static CephFS PVs can leave staging mounts behind (Kubernetes #105323). See the repository README."
           } > release/notes.md
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             gh release upload "$RELEASE_TAG" release/installer-amd64.tar release/SHA256SUMS release/installer-image.txt release/verification.txt release/kernel.config --clobber

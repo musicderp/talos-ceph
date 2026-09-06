@@ -1,0 +1,67 @@
+name: Track stable Talos releases
+on:
+  schedule:
+    - cron: '23 6 * * *'
+  workflow_dispatch:
+    inputs:
+      force_build:
+        description: Build even when upstream pins are unchanged
+        type: boolean
+        default: false
+  push:
+    branches: [main]
+    paths: ['scripts/update-upstream.py', '.github/workflows/sync-upstream.yml']
+permissions:
+  contents: write
+  actions: write
+concurrency:
+  group: stable-upstream-sync
+  cancel-in-progress: false
+jobs:
+  sync:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: main
+      - name: Test release selection and patch guardrails
+        run: python3 -B -m unittest discover -s tests -v
+      - name: Resolve highest published stable release
+        id: upstream
+        run: python3 -B scripts/update-upstream.py
+      - name: Validate new upstream source compatibility
+        if: steps.upstream.outputs.changed == 'true'
+        run: |
+          source versions.env
+          git init work/pkgs
+          git -C work/pkgs remote add origin https://github.com/siderolabs/pkgs.git
+          git -C work/pkgs fetch --depth=1 origin "$PKGS_COMMIT"
+          git -C work/pkgs checkout --detach FETCH_HEAD
+          python3 -B scripts/prepare.py kernel work/pkgs
+          git init work/talos
+          git -C work/talos remote add origin https://github.com/siderolabs/talos.git
+          git -C work/talos fetch --depth=1 origin "$TALOS_COMMIT"
+          git -C work/talos checkout --detach FETCH_HEAD
+          python3 -B scripts/prepare.py talos work/talos
+          cat work/pkgs/ceph-patch-status.txt >> "$GITHUB_STEP_SUMMARY"
+      - name: Commit reproducible upstream pins
+        if: steps.upstream.outputs.changed == 'true'
+        run: |
+          source versions.env
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add versions.env
+          git commit -m "chore: track Talos ${TALOS_VERSION} stable release"
+          git push origin HEAD:main
+      - name: Start the build explicitly
+        if: steps.upstream.outputs.changed == 'true' || inputs.force_build == true
+        run: |
+          # Token-authored pushes do not trigger push workflows; dispatch does.
+          gh workflow run build.yml --ref main
+          echo 'Dispatched Build patched Talos. Successful builds trigger verification and a release.' >> "$GITHUB_STEP_SUMMARY"
+      - name: Report unchanged upstream
+        if: steps.upstream.outputs.changed != 'true' && inputs.force_build != true
+        run: echo 'Already pinned to the highest published stable Talos release; no rebuild needed.' >> "$GITHUB_STEP_SUMMARY"
