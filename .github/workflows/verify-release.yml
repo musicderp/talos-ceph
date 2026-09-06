@@ -1,0 +1,72 @@
+name: Verify and release installer
+on:
+  workflow_run:
+    workflows: [Build patched Talos]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      build_sha:
+        description: Full commit SHA of a successful build
+        required: true
+permissions:
+  contents: write
+  packages: read
+jobs:
+  verify:
+    if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      BUILD_SHA: ${{ github.event.workflow_run.head_sha || inputs.build_sha }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Pull the completed build
+        run: |
+          [[ "$BUILD_SHA" =~ ^[0-9a-f]{40}$ ]]
+          git fetch --depth=1 origin "$BUILD_SHA"
+          git show "${BUILD_SHA}:versions.env" > /tmp/build-versions.env
+          source /tmp/build-versions.env
+          tag="${IMAGE_TAG}-${BUILD_SHA::12}"
+          image="ghcr.io/${GITHUB_REPOSITORY}/installer:${tag}"
+          echo "RELEASE_TAG=$tag" >> "$GITHUB_ENV"
+          echo "INSTALLER_IMAGE=$image" >> "$GITHUB_ENV"
+          docker pull "$image"
+          mkdir -p release
+          docker inspect --format '{{index .RepoDigests 0}}' "$image" > release/installer-image.txt
+          container=$(docker create "$image")
+          docker cp "$container:/usr/install/amd64/vmlinuz.efi" verification/vmlinuz.efi
+          docker rm "$container"
+      - name: Verify embedded kernel, Ceph, i915, firmware and signatures
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends cpio squashfs-tools zstd kmod xz-utils bzip2 lz4
+          cd verification
+          sudo bash check.sh | tee ../release/verification.txt
+          cp kernel.config ../release/kernel.config
+      - name: Publish downloadable installer and verification report
+        run: |
+          docker save "$INSTALLER_IMAGE" -o release/installer-amd64.tar
+          (cd release && sha256sum installer-amd64.tar > SHA256SUMS)
+          {
+            echo "Talos v1.13.6 with Linux 6.18.38-talos-ceph1."
+            echo
+            echo "CephFS and libceph are built in. The signed i915 module and firmware are included."
+            echo "Installer contents passed the attached automated verification."
+            echo
+            echo "Deploy using the digest in installer-image.txt. Load the archive with docker load -i installer-amd64.tar."
+            echo "The archive contains no cluster configuration or credentials."
+          } > release/notes.md
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" release/installer-amd64.tar release/SHA256SUMS release/installer-image.txt release/verification.txt release/kernel.config --clobber
+          else
+            gh release create "$RELEASE_TAG" --target "$BUILD_SHA" --title "Talos $RELEASE_TAG" --notes-file release/notes.md \
+              release/installer-amd64.tar release/SHA256SUMS release/installer-image.txt release/verification.txt release/kernel.config
+          fi
+          cat release/verification.txt >> "$GITHUB_STEP_SUMMARY"
+          cat release/installer-image.txt >> "$GITHUB_STEP_SUMMARY"
