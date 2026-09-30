@@ -113,3 +113,12 @@ jobs:
           path: |
             _out/installer-inspect.json
             _out/installer-manifest.txt
+  release:
+    needs: installer
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+      packages: write
+    uses: ./.github/workflows/verify-release.yml
+    with:
+      build_sha: ${{ github.sha }}

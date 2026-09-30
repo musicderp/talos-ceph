@@ -56,12 +56,26 @@ jobs:
           git add versions.env
           git commit -m "chore: track Talos ${TALOS_VERSION} stable release"
           git push origin HEAD:main
+      - name: Check for an unreleased current pin
+        id: release
+        if: steps.upstream.outputs.changed != 'true' && inputs.force_build != true
+        run: |
+          # A pin whose build failed, or whose release never ran, is retried
+          # daily instead of being reported as up to date.
+          source versions.env
+          if gh release list --limit 100 --json tagName --jq '.[].tagName' | grep -q "^${IMAGE_TAG}-"; then
+            echo 'missing=false' >> "$GITHUB_OUTPUT"
+            echo "Already pinned to the highest published stable Talos release; ${IMAGE_TAG} is released." >> "$GITHUB_STEP_SUMMARY"
+          elif [ -n "$(gh run list --workflow build.yml --branch main --json status --jq '.[] | select(.status != "completed") | .status')" ]; then
+            echo 'missing=false' >> "$GITHUB_OUTPUT"
+            echo "${IMAGE_TAG} has no release yet; a build is already queued or running." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'missing=true' >> "$GITHUB_OUTPUT"
+            echo "${IMAGE_TAG} has no release; starting a build." >> "$GITHUB_STEP_SUMMARY"
+          fi
       - name: Start the build explicitly
-        if: steps.upstream.outputs.changed == 'true' || inputs.force_build == true
+        if: steps.upstream.outputs.changed == 'true' || inputs.force_build == true || steps.release.outputs.missing == 'true'
         run: |
           # Token-authored pushes do not trigger push workflows; dispatch does.
           gh workflow run build.yml --ref main
-          echo 'Dispatched Build patched Talos. Successful builds trigger verification and a release.' >> "$GITHUB_STEP_SUMMARY"
-      - name: Report unchanged upstream
-        if: steps.upstream.outputs.changed != 'true' && inputs.force_build != true
-        run: echo 'Already pinned to the highest published stable Talos release; no rebuild needed.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Dispatched Build patched Talos. It verifies and publishes a release as its final job.' >> "$GITHUB_STEP_SUMMARY"

@@ -19,13 +19,13 @@ module is included in the initramfs with the standard Talos DRM dependencies
 and the matching upstream i915 firmware. Do not add the stock i915 extension:
 its module is signed by a different kernel-build key.
 
-Current target: Talos `v1.14.0`, Linux `6.18.48-talos-ceph1`.
-`versions.env` is authoritative as new stable releases appear.
+The current target Talos release and kernel are pinned in `versions.env`, which
+the tracker updates as new stable releases appear.
 The workflow requires no personal access token and receives no cluster secrets.
 Deployment is a separate authenticated rolling Talos upgrade from a management
 workstation, one node at a time, with Kubernetes and Ceph health checks.
 
-After a successful build, a second workflow extracts the installer's boot image
+After a successful build, its final job extracts the installer's boot image
 and verifies its embedded kernel configuration, Ceph builtins, i915 module,
 firmware, module dependencies, and appended module signatures. It publishes a
 GitHub release containing a Docker image archive, SHA256 checksum, image digest,
@@ -65,10 +65,16 @@ package pin, resolves the package commit, and derives its kernel version and
 checksum. It validates patch and i915 source compatibility before committing
 `versions.env`. It then explicitly dispatches the build using `GITHUB_TOKEN`;
 GitHub does not trigger push workflows for commits made with that token.
-No personal token is required.
+No personal token is required. Verification and release run as a job inside the
+build workflow rather than on a `workflow_run` event, because GitHub also does
+not raise that event for runs started with `GITHUB_TOKEN`.
+
+When the pins are unchanged, the tracker checks that a release exists for the
+current `IMAGE_TAG`. If none does and no build is queued or running, it starts a
+build, so a failed or unreleased pin is retried daily instead of being skipped.
 
 New images retain the Ceph fix, built-in CephFS/libceph, and matching signed i915.
-Every successful build triggers boot-image verification and a downloadable
+Every successful build on main ends with boot-image verification and a downloadable
 release. Only verified builds whose inputs still match main are promoted to
 `ghcr.io/musicderp/talos-ceph/installer:stable` and `:latest`. Each release also
 has a commit-specific tag and digest. The last verified aliases remain usable
