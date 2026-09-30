@@ -1,8 +1,14 @@
 name: Verify and release installer
 on:
-  workflow_run:
-    workflows: [Build patched Talos]
-    types: [completed]
+  # Called by the build workflow as its final job. A workflow_run trigger is not
+  # used: GitHub does not raise it for builds dispatched with GITHUB_TOKEN, which
+  # is how the stable tracker starts every upstream update.
+  workflow_call:
+    inputs:
+      build_sha:
+        description: Full commit SHA of a successful build
+        type: string
+        required: true
   workflow_dispatch:
     inputs:
       build_sha:
@@ -13,11 +19,10 @@ permissions:
   packages: write
 jobs:
   verify:
-    if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main')
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
-      BUILD_SHA: ${{ github.event.workflow_run.head_sha || inputs.build_sha }}
+      BUILD_SHA: ${{ inputs.build_sha }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
