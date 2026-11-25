@@ -65,10 +65,14 @@ class PatchCompatibility(unittest.TestCase):
     def test_upstream_fix_is_not_double_applied(self):
         self.assertEqual(patch_state(ceph("(SB_BORN | SB_NODIRATIME | SB_NOATIME)")), "upstream")
 
-    def test_active_flag_requires_review(self):
-        for mask in ["SB_BORN", "(SB_BORN | SB_NODIRATIME | SB_NOATIME)"]:
-            with self.assertRaises(ValueError):
-                patch_state(ceph(mask, active=True))
+    def test_active_flag_with_original_mask_needs_patch(self):
+        # Linux 6.18.65 sets SB_ACTIVE but still masks only SB_BORN; our patch
+        # masks SB_ACTIVE too, so it applies.
+        self.assertEqual(patch_state(ceph(active=True)), "apply")
+
+    def test_partial_upstream_fix_with_active_requires_review(self):
+        with self.assertRaises(ValueError):
+            patch_state(ceph("(SB_BORN | SB_NODIRATIME | SB_NOATIME)", active=True))
 
     def test_complete_upstream_fix_with_active_is_accepted(self):
         self.assertEqual(patch_state(ceph("(SB_BORN | SB_ACTIVE | SB_NODIRATIME | SB_NOATIME)", True)), "upstream")

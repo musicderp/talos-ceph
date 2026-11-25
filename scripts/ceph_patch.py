@@ -31,7 +31,10 @@ def patch_state(source):
     required = REQUIRED | ({"SB_ACTIVE"} if active else set())
     if required <= flags:
         return "upstream"
-    if flags == {"SB_BORN"} and not active:
+    # Our patch masks SB_ACTIVE as well as the atime flags, so it also covers
+    # kernels that set SB_ACTIVE (6.18.65+) while still comparing only SB_BORN.
+    # prepare() re-checks the patched source and requires the complete mask.
+    if flags == {"SB_BORN"}:
         return "apply"
     raise ValueError("Ceph flags, including possible SB_ACTIVE handling, need patch review")
 
